@@ -1,0 +1,150 @@
+import express from "express";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
+import { signTencentCloud } from "./tencentSign.js";
+
+dotenv.config();
+
+const app = express();
+app.use(express.json());
+
+// 提交3D生成任务
+app.post('/generate-3d', async (req, res) => {
+    try {
+        const { prompt } = req.body;
+        
+        const host = "ai3d.tencentcloudapi.com";  // ✅ 正确的服务
+        const service = "ai3d";  // ✅ 正确的服务名
+        const action = "SubmitHunyuanTo3DProJob";  // ✅ 正确的 Action
+        const version = "2025-05-13";  // ✅ 正确的版本
+        const region = "ap-guangzhou";
+        
+        // 根据API文档构建请求参数
+        const payload = JSON.stringify({
+            Prompt: prompt,
+            // 可能还需要其他参数,参考文档
+        });
+        
+        const { authorization, timestamp } = signTencentCloud({
+            secretId: process.env.TENCENTCLOUD_SECRET_ID,
+            secretKey: process.env.TENCENTCLOUD_SECRET_KEY,
+            service,
+            host,
+            payload
+        });
+        
+        const response = await fetch(`https://${host}`, {
+            method: "POST",
+            headers: {
+                "Authorization": authorization,
+                "Content-Type": "application/json; charset=utf-8",
+                "Host": host,
+                "X-TC-Action": action,
+                "X-TC-Version": version,
+                "X-TC-Region": region,
+                "X-TC-Timestamp": timestamp.toString()
+            },
+            body: payload
+        });
+        
+        const data = await response.json();
+        console.log("✅ 提交任务响应:", JSON.stringify(data, null, 2));
+        
+        if (data.Response && data.Response.JobId) {
+            res.json({
+                success: true,
+                jobId: data.Response.JobId
+            });
+        } else if (data.Response && !data.Response.Error) {
+            res.json({
+                success: true,
+                data: data.Response
+            });
+        } else {
+            res.json({
+                success: false,
+                error: data.Response?.Error?.Message || "未知错误",
+                code: data.Response?.Error?.Code,
+                raw: data
+            });
+        }
+    } catch (error) {
+        console.error("❌ 错误:", error);
+        res.json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+// 查询任务状态 (根据文档可能需要不同的 Action)
+app.get('/query-3d/:jobId', async (req, res) => {
+    try {
+        const { jobId } = req.params;
+        
+        const host = "ai3d.tencentcloudapi.com";
+        const service = "ai3d";
+        const action = "QueryHunyuanTo3DProJob";  // 查询接口 (可能需要根据文档调整)
+        const version = "2025-05-13";
+        const region = "ap-guangzhou";
+        
+        const payload = JSON.stringify({
+            JobIds: [jobId]
+        });
+        
+        const { authorization, timestamp } = signTencentCloud({
+            secretId: process.env.TENCENTCLOUD_SECRET_ID,
+            secretKey: process.env.TENCENTCLOUD_SECRET_KEY,
+            service,
+            host,
+            payload
+        });
+        
+        const response = await fetch(`https://${host}`, {
+            method: "POST",
+            headers: {
+                "Authorization": authorization,
+                "Content-Type": "application/json; charset=utf-8",
+                "Host": host,
+                "X-TC-Action": action,
+                "X-TC-Version": version,
+                "X-TC-Region": region,
+                "X-TC-Timestamp": timestamp.toString()
+            },
+            body: payload
+        });
+        
+        const data = await response.json();
+        console.log("✅ 查询任务响应:", JSON.stringify(data, null, 2));
+        
+        if (data.Response) {
+            res.json({
+                success: true,
+                status: data.Response.JobStatusMsg || data.Response.Status,
+                progress: data.Response.JobProgress || data.Response.Progress,
+                modelUrl: data.Response.ResultObjUrl || data.Response.ModelUrl,
+                data: data.Response
+            });
+        } else {
+            res.json({
+                success: false,
+                error: "查询失败",
+                raw: data
+            });
+        }
+    } catch (error) {
+        console.error("❌ 错误:", error);
+        res.json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+app.listen(3000, () => {
+    console.log('✅ Server running on http://127.0.0.1:3000');
+    console.log('📝 服务配置:');
+    console.log('   - Service: ai3d');
+    console.log('   - Action: SubmitHunyuanTo3DProJob');
+    console.log('   - Version: 2025-05-13');
+});
