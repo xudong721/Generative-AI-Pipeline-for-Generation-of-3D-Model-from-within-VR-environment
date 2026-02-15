@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D 生成工具盲测评测 | 3D Generation Benchmarking</title>
+    <style>
+        :root { --primary: #007AFF; --bg: #F2F2F7; --card-bg: #FFFFFF; }
+        body { font-family: -apple-system, "Helvetica Neue", sans-serif; background: var(--bg); margin: 0; padding: 15px; padding-bottom: 120px; color: #1c1c1e; }
+        .container { max-width: 800px; margin: 0 auto; }
+        header { text-align: center; margin-bottom: 30px; }
+        h1 { font-size: 1.5rem; margin-bottom: 5px; }
+        .sub-title { color: #666; font-size: 0.9rem; line-height: 1.4; }
+
+        .card { background: var(--card-bg); border-radius: 24px; padding: 20px; margin-bottom: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
+        .card-title { font-weight: bold; font-size: 1.2rem; margin-bottom: 10px; color: #333; }
+        
+        .case-instruction { 
+            background: #f0f7ff; padding: 10px 15px; border-radius: 12px; font-size: 0.85rem; 
+            color: var(--primary); margin-bottom: 20px; border-left: 4px solid var(--primary); line-height: 1.5;
+        }
+
+        .user-info-group { margin-top: 10px; }
+        .input-label { display: block; font-size: 0.95rem; font-weight: 600; margin-bottom: 8px; }
+        .input-field { 
+            width: 100%; padding: 14px; border: 1px solid #ddd; border-radius: 12px; 
+            font-size: 1rem; box-sizing: border-box; outline: none;
+        }
+
+        .origin-section { text-align: center; margin-bottom: 25px; }
+        .origin-img { 
+            width: 250px; height: 250px; object-fit: contain; border-radius: 16px; 
+            background: #fff; border: 2px solid #eee; box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+        .tag { font-size: 12px; color: #8e8e93; margin-top: 8px; font-weight: bold; text-transform: uppercase; }
+
+        .options-grid { 
+            display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; 
+            border-top: 1px solid #f0f0f0; padding-top: 20px;
+        }
+        .opt-item { position: relative; cursor: pointer; transition: 0.2s; border: 2px solid transparent; border-radius: 12px; padding: 3px; }
+        .option-img { display: block; width: 100%; aspect-ratio: 1/1; object-fit: contain; border-radius: 8px; background: #f9f9f9; }
+        
+        .opt-item.active { border-color: var(--primary); background: rgba(0,122,255,0.05); transform: translateY(-3px); }
+        .opt-item.active::after { 
+            content: "✓"; position: absolute; top: -8px; right: -8px; 
+            background: var(--primary); color: white; width: 22px; height: 22px; 
+            border-radius: 50%; display: flex; align-items: center; justify-content: center; 
+            font-size: 14px; font-weight: bold; border: 2px solid white;
+        }
+
+        @media (max-width: 600px) {
+            .origin-img { width: 60vw; height: 60vw; }
+        }
+
+        .footer-bar { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(255,255,255,0.95); backdrop-filter: blur(15px); padding: 20px; border-top: 1px solid #eee; text-align: center; z-index: 100; }
+        .submit-btn { background: var(--primary); color: white; border: none; padding: 15px 60px; border-radius: 30px; font-size: 1.1rem; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>3D 生成质量评测</h1>
+        <div class="sub-title">3D Generation Quality Evaluation</div>
+    </header>
+
+    <form id="surveyForm" action="https://formspree.io/f/maqjkwrq" method="POST">
+        <div class="card">
+            <div class="card-title">基本信息 / Basic Info</div>
+            <div class="user-info-group">
+                <label class="input-label">姓名 / Full Name <span style="color: #ff3b30;">*</span></label>
+                <input type="text" name="user_name" class="input-field" placeholder="请输入您的姓名 / Your Name" required>
+            </div>
+        </div>
+
+        <div id="questions"></div>
+        
+        <div class="footer-bar">
+            <button type="submit" class="submit-btn">完成并提交 / Submit</button>
+        </div>
+    </form>
+</div>
+
+<script>
+    const items = ["jeep", "Audi", "叉子", "橙球", "狗头", "炉子", "披萨", "球衣", "台灯"];
+    const tools = [
+        { id: 'h', name: 'Hunyuan' },
+        { id: 't', name: 'Tripo' },
+        { id: 'm', name: 'Meshy' },
+        { id: 'Hy', name: 'Hyper3D' },
+        { id: 'Tr', name: 'Trellis' }
+    ];
+
+    const container = document.getElementById('questions');
+
+    items.forEach((item, index) => {
+        // 使用 encodeURI 处理带空格的文件名路径
+        const originSrc = encodeURI(`o ${item}.png`);
+        
+        let html = `
+            <div class="card">
+                <div class="card-title">Case ${index + 1}: ${item}</div>
+                <div class="case-instruction">
+                    请选最贴近参考图的模型，使用浏览器有放大功能！<br>
+                    Please select the model that most closely matches the reference image. Your browser has a zoom function!
+                </div>
+                
+                <div class="origin-section">
+                    <img src="${originSrc}" class="origin-img" alt="Reference">
+                    <div class="tag">参考原图 / REFERENCE IMAGE</div>
+                </div>
+
+                <input type="hidden" name="case_${item}" id="input_${item}" required>
+                <div class="options-grid">
+        `;
+
+        const shuffled = [...tools].sort(() => Math.random() - 0.5);
+        shuffled.forEach(tool => {
+            const toolSrc = encodeURI(`${tool.id} ${item}.png`);
+            html += `
+                <div class="opt-item" onclick="select(this, '${item}', '${tool.name}')">
+                    <img src="${toolSrc}" class="option-img" loading="lazy">
+                </div>
+            `;
+        });
+        html += `</div></div>`;
+        container.innerHTML += html;
+    });
+
+    function select(el, itemKey, toolName) {
+        const parent = el.parentElement;
+        parent.querySelectorAll('.opt-item').forEach(i => i.classList.remove('active'));
+        el.classList.add('active');
+        document.getElementById('input_' + itemKey).value = toolName;
+    }
+
+    // 提交前的逻辑检查
+    document.getElementById('surveyForm').onsubmit = function(e) {
+        let unanswered = 0;
+        items.forEach(item => {
+            if (!document.getElementById('input_' + item).value) unanswered++;
+        });
+        
+        if (unanswered > 0) {
+            e.preventDefault();
+            alert("您还有 " + unanswered + " 个选项未选择，请完成后提交！\nPlease complete all " + unanswered + " cases before submitting!");
+        }
+    };
+</script>
+
+</body>
+</html>
