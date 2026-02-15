@@ -1,0 +1,7 @@
+latex写作没给全再给你发一遍：接下提供操作链接： 设置开关口：https://console.cloud.tencent.com/ai3d/settings ；
+资源包管理：https://console.cloud.tencent.com/ai3d/packages ；
+充值窗口：https://console.cloud.tencent.com/expense/recharge?amount=21&userRechargeResult=1&backUrl=undefined ；
+调用记录查询：https://console.cloud.tencent.com/api/explorer?Product=ai3d&Version=2025-05-13&Action=SubmitHunyuanTo3DProJob  ；
+ 提交工单（询问客服）：https://console.cloud.tencent.com/workorder/category?source=14 ；
+文档：https://cloud.tencent.com/document/product/1804/120757 ；
+公共参数：https://cloud.tencent.com/document/api/1804/120832#.E5.9C.B0.E5.9F.9F.E5.88.97.E8.A1.A8

@@ -1,0 +1,5 @@
+下面是数据，单位为秒（s）：Hyper3D： simple：269，360，376；medium：215，440，304；complex：311，390，300，318. 
+Hunyuan：simple：155，274，222；medium：293，248，245；complex：300，267，326，274. 
+Meshy： somple：24，111，123； medium：199，212，182； complex：561，255，220，180. 
+Tripo：simple：81，106，72；medium：164，70，218；complex：76，114，76，88.  
+Trellis：simple：19，22，23；medium：21，23，52；complex：57，60，31，30.

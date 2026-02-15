@@ -1,0 +1,13 @@
+import qrcode
+
+# 您的 GitHub 链接
+url = "https://github.com/xudong721/Generative-AI-Pipeline-for-Generation-of-3D-Model-from-within-VR-environment/tree/main/tencent-demo"
+
+# 生成 QR Code
+qr = qrcode.QRCode(box_size=10, border=4)
+qr.add_data(url)
+qr.make(fit=True)
+
+# 保存为图片
+img = qr.make_image(fill_color="black", back_color="white")
+img.save("Project_Repository_QR.png")
