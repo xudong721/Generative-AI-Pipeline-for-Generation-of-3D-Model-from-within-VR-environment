@@ -1,0 +1,232 @@
+import numpy as np
+from scipy.spatial import cKDTree
+import trimesh
+from PIL import Image, ImageDraw
+import torch
+import clip
+import os
+import gc
+import csv
+import matplotlib.pyplot as plt
+from math import pi
+
+# -------------------------
+# 1. 路径与全局配置 (在此处修改路径和颜色)
+# -------------------------
+CONFIG = {
+    "gt_dir": "3d_eval_project/data/gt/glb_files",
+    "gen_dir": "3d_eval_project/data/gen/trellis",
+    
+    # 结果输出根目录
+    "output_dir": "3d_eval_project/results", 
+    # 雷达图存放的子文件夹名
+    "charts_subdir": "radar_charts", 
+    
+    "n_samples": 3000,
+    
+    # --- 颜色选择 (Hex 颜色码) ---
+    # 翡翠绿: #2ecc71 | 亮蓝色: #3498db | 活力橙: #e67e22 
+    # 优雅紫: #9b59b6 | 胭脂红: #e74c3c | 深青色: #008080
+    "chart_color": "#9b59b6", 
+    
+    "weights": {
+        "geometry": 0.4,
+        "perceptual": 0.4,
+        "topology": 0.2
+    }
+}
+
+# 自动创建路径
+CHART_DIR = os.path.join(CONFIG["output_dir"], CONFIG["charts_subdir"])
+os.makedirs(CHART_DIR, exist_ok=True)
+
+# -------------------------
+# 2. 核心评估函数
+# -------------------------
+
+def chamfer_distance(mesh1, mesh2, n_samples=3000):
+    try:
+        def get_aligned_pc(mesh, n):
+            pc = mesh.sample(n)
+            pc -= np.mean(pc, axis=0)
+            dist = np.max(np.sqrt(np.sum(pc**2, axis=1)))
+            if dist > 0: pc /= dist
+            return pc
+        p1, p2 = get_aligned_pc(mesh1, n_samples), get_aligned_pc(mesh2, n_samples)
+        tree1, tree2 = cKDTree(p1), cKDTree(p2)
+        d12, _ = tree1.query(p2, k=1)
+        d21, _ = tree2.query(p1, k=1)
+        raw_dist = float(np.mean(d12) + np.mean(d21))
+        score = max(0, 100 * (1 - raw_dist * 2.0)) 
+        return round(score, 2), raw_dist
+    except: return 0, 1.0
+
+def get_topology_score_academic(mesh):
+    if isinstance(mesh, trimesh.Scene): mesh = mesh.dump(concatenate=True)
+    mesh.merge_vertices()
+    tri_verts = mesh.vertices[mesh.faces]
+    e0 = np.linalg.norm(tri_verts[:, 1] - tri_verts[:, 0], axis=1)
+    e1 = np.linalg.norm(tri_verts[:, 2] - tri_verts[:, 1], axis=1)
+    e2 = np.linalg.norm(tri_verts[:, 0] - tri_verts[:, 2], axis=1)
+    cv = np.mean(np.std([e0, e1, e2], axis=0) / (np.mean([e0, e1, e2], axis=0) + 1e-8))
+    return round(float(max(0, min(100, 100 * (1 - cv * 2)))), 2)
+
+def get_perceptual_score(mesh1, mesh2, model, preprocess, device):
+    """
+    技术评估版：支持颜色感知的 CLIP 评分
+    1. 提取顶点颜色以区分贴图质量
+    2. 使用实心圆点渲染增强视觉特征
+    3. 线性拉伸分数以匹配人眼感知的差异（拉开梯度）
+    """
+    try:
+        def render_colored_views(mesh):
+            # 1. 场景转网格
+            if isinstance(mesh, trimesh.Scene): 
+                mesh = mesh.dump(concatenate=True)
+            
+            verts = mesh.vertices.copy()
+            
+            # 2. 核心：提取颜色信息
+            # 如果 AI 生成的模型带贴图或顶点色，这里会捕捉到
+            if hasattr(mesh.visual, 'vertex_colors') and len(mesh.visual.vertex_colors) > 0:
+                # 提取 RGB (0-255)
+                colors = mesh.visual.vertex_colors[:, :3] 
+            else:
+                # 如果完全没颜色，默认给灰色
+                colors = np.full((len(verts), 3), 120) 
+            
+            # 3. 几何归一化
+            verts -= verts.mean(axis=0)
+            scale = np.max(np.linalg.norm(verts, axis=1))
+            if scale > 0: verts /= scale
+            
+            combined = Image.new("RGB", (224 * 3, 224), (255, 255, 255))
+            point_radius = 1.8 # 稍微加粗，有利于 CLIP 识别纹理块
+            
+            # 4. 渲染三视图
+            for i, p_idx in enumerate([[0, 1], [2, 1], [0, 2]]):
+                img = Image.new("RGB", (224, 224), (255, 255, 255))
+                draw = ImageDraw.Draw(img)
+                # 留出边距
+                coords = ((verts[:, p_idx] + 1.0) * 0.5 * 190) + 17
+                
+                # 带颜色渲染每个点
+                for (x, y), color in zip(coords, colors):
+                    c = tuple(color.astype(int))
+                    draw.ellipse([x - point_radius, y - point_radius, 
+                                  x + point_radius, y + point_radius], 
+                                 fill=c)
+                
+                combined.paste(img, (i * 224, 0))
+            
+            return preprocess(combined).unsqueeze(0).to(device)
+
+        # 执行渲染
+        t1 = render_colored_views(mesh1)
+        t2 = render_colored_views(mesh2)
+        
+        with torch.no_grad():
+            feat1 = model.encode_image(t1)
+            feat2 = model.encode_image(t2)
+            sim = float(torch.nn.functional.cosine_similarity(feat1, feat2))
+        
+        # 5. 分数映射优化 (核心修改)
+        # 基础相似度 sim 通常在 0.7 左右，我们设定 0.7 为“0分基准”，1.0 为“100分”
+        # 公式: Score = (sim - threshold) / (1 - threshold) * 100
+        threshold = 0.7
+        stretched_score = (sim - threshold) / (1.0 - threshold) * 100
+        
+        # 确保得分在 0-100 之间并保留两位小数
+        final_score = round(max(0, min(100, stretched_score)), 2)
+        return final_score
+
+    except Exception as e:
+        print(f"  CLIP 颜色感知评估失败: {e}")
+        return 0
+
+# -------------------------
+# 3. 可视化优化 (雷达图)
+# -------------------------
+
+def save_radar_chart(scores, model_id, color='#2ecc71'):
+    labels = list(scores.keys())
+    values = list(scores.values())
+    num_vars = len(labels)
+    angles = [n / float(num_vars) * 2 * pi for n in range(num_vars)]
+    
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('none') # 彻底消除蒙层感
+
+    # 闭合绘图
+    ax.plot(angles + angles[:1], values + values[:1], color=color, linewidth=2)
+    ax.fill(angles + angles[:1], values + values[:1], color=color, alpha=0.12) # 极低透明度，非常高级
+
+    ax.set_xticks(angles)
+    ax.set_xticklabels(labels, fontsize=10, fontweight='bold')
+    ax.set_ylim(0, 100)
+    
+    # 标注数值
+    for angle, val in zip(angles, values):
+        ax.text(angle, val + 10, f'{val:.1f}', ha='center', color=color, fontweight='bold',
+                bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'))
+
+    plt.title(f"Model: {model_id}", size=14, pad=25)
+    
+    # 保存至指定的 charts 子文件夹
+    save_path = os.path.join(CHART_DIR, f"{model_id}_radar.png")
+    plt.savefig(save_path, dpi=120, bbox_inches='tight')
+    plt.close(fig)
+
+# -------------------------
+# 4. 主程序
+# -------------------------
+
+def run_pipeline():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, preprocess = clip.load("ViT-B/32", device=device, jit=False)
+    model.float() 
+
+    results_data = []
+    gen_files = [f for f in os.listdir(CONFIG["gen_dir"]) if f.lower().endswith(('.glb', '.obj'))]
+    
+    for gen_file in gen_files:
+        model_id = os.path.splitext(gen_file)[0]
+        gt_path = os.path.join(CONFIG["gt_dir"], f"{model_id}.glb")
+        if not os.path.exists(gt_path): continue
+        
+        print(f"正在评估: {model_id}...")
+        try:
+            m_gen = trimesh.load(os.path.join(CONFIG["gen_dir"], gen_file), force='mesh', process=True)
+            m_gt = trimesh.load(gt_path, force='mesh', process=True)
+            
+            s_geo, raw_cd = chamfer_distance(m_gt, m_gen, n_samples=CONFIG["n_samples"])
+            s_topo = get_topology_score_academic(m_gen)
+            s_perc = get_perceptual_score(m_gt, m_gen, model, preprocess, device)
+            
+            total = (s_geo * CONFIG["weights"]["geometry"] + 
+                     s_perc * CONFIG["weights"]["perceptual"] + 
+                     s_topo * CONFIG["weights"]["topology"])
+            
+            save_radar_chart({"Geometry": s_geo, "Perceptual": s_perc, "Topology": s_topo}, 
+                             model_id, color=CONFIG["chart_color"])
+            
+            results_data.append([model_id, f"{total:.2f}", s_geo, s_perc, s_topo, f"{raw_cd:.6f}"])
+            
+            # 释放内存
+            del m_gen, m_gt
+            if device == "cuda": torch.cuda.empty_cache()
+            gc.collect()
+        except Exception as e:
+            print(f"失败 {model_id}: {e}")
+
+    # 保存 CSV
+    with open(os.path.join(CONFIG["output_dir"], "summary.csv"), 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["ID", "Total", "Geo", "Perc", "Topo", "Raw_CD"])
+        writer.writerows(results_data)
+    
+    print(f"\n评估完成！\n汇总表: {CONFIG['output_dir']}/summary.csv\n雷达图: {CHART_DIR}/")
+
+if __name__ == "__main__":
+    run_pipeline()
