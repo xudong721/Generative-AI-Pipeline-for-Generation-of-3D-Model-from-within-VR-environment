@@ -1,0 +1,312 @@
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.Networking;
+using UnityEngine.Windows.Speech;
+using System.Collections;
+using System.IO;
+using TMPro;
+using GLTFast;
+
+public class UnifiedVoiceText3D : MonoBehaviour
+{
+    [Header("UI References")]
+    public TMP_InputField textInputField;
+    public Button generateButton;
+    public Button startRecordingButton;
+    public Button stopRecordingButton;
+    public TMP_Text statusText;
+    public Slider progressSlider;
+
+    [Header("Model Settings")]
+    public Transform parent;
+    public float modelScale = 1.0f;
+
+    [Header("Server Settings")]
+    public string serverUrl = "http://127.0.0.1:3000";
+    public float pollInterval = 5f;
+    public int maxPollAttempts = 60;
+
+    [Header("Voice Recognition")]
+    public bool enableVoiceRecognition = true;
+    public float confidenceThreshold = 0.5f;
+
+    private DictationRecognizer dictationRecognizer;
+    private bool isListening = false;
+
+    private string currentJobId;
+    private GameObject currentModel;
+
+    void Start()
+    {
+        generateButton?.onClick.AddListener(OnGenerateClicked);
+
+        if (enableVoiceRecognition)
+        {
+            startRecordingButton?.onClick.AddListener(StartListening);
+            stopRecordingButton?.onClick.AddListener(StopListening);
+            if (stopRecordingButton) stopRecordingButton.interactable = false;
+            InitializeDictationRecognizer();
+        }
+        else
+        {
+            startRecordingButton?.gameObject.SetActive(false);
+            stopRecordingButton?.gameObject.SetActive(false);
+        }
+
+        UpdateStatus("Ready");
+        if (progressSlider) progressSlider.value = 0;
+    }
+
+    #region Voice
+    void InitializeDictationRecognizer()
+    {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        try
+        {
+            dictationRecognizer = new DictationRecognizer();
+
+            dictationRecognizer.DictationResult += (text, confidence) =>
+            {
+                if (confidence >= (ConfidenceLevel)Mathf.RoundToInt(confidenceThreshold * 2))
+                {
+                    textInputField.text += text + " ";
+                }
+            };
+
+            dictationRecognizer.DictationError += (error, _) =>
+            {
+                UpdateStatus("Recognition error: " + error);
+            };
+        }
+        catch
+        {
+            enableVoiceRecognition = false;
+        }
+#endif
+    }
+
+    void StartListening()
+    {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        if (!enableVoiceRecognition || dictationRecognizer == null) return;
+
+        dictationRecognizer.Start();
+        isListening = true;
+        startRecordingButton.interactable = false;
+        stopRecordingButton.interactable = true;
+        UpdateStatus("Listening...");
+#endif
+    }
+
+    void StopListening()
+    {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        if (!isListening) return;
+
+        dictationRecognizer.Stop();
+        isListening = false;
+        startRecordingButton.interactable = true;
+        stopRecordingButton.interactable = false;
+        UpdateStatus("Voice input completed");
+#endif
+    }
+    #endregion
+
+    #region Generate
+    void OnGenerateClicked()
+    {
+        string prompt = textInputField.text.Trim();
+        if (string.IsNullOrEmpty(prompt))
+        {
+            UpdateStatus("Please enter text");
+            return;
+        }
+
+        generateButton.interactable = false;
+        UpdateStatus("Submitting task...");
+        StartCoroutine(SendPrompt(prompt));
+    }
+
+    IEnumerator SendPrompt(string prompt)
+    {
+        string url = $"{serverUrl}/generate-3d";
+        string json = JsonUtility.ToJson(new PromptData { prompt = prompt });
+
+        using var req = new UnityWebRequest(url, "POST");
+        req.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(json));
+        req.downloadHandler = new DownloadHandlerBuffer();
+        req.SetRequestHeader("Content-Type", "application/json");
+
+        yield return req.SendWebRequest();
+
+        if (req.result != UnityWebRequest.Result.Success)
+        {
+            UpdateStatus("Submit failed: " + req.error);
+            generateButton.interactable = true;
+            yield break;
+        }
+
+        var res = JsonUtility.FromJson<SubmitResponse>(req.downloadHandler.text);
+        currentJobId = res.jobId;
+
+        UpdateStatus("Job submitted: " + currentJobId);
+        StartCoroutine(PollStatus());
+    }
+
+    IEnumerator PollStatus()
+    {
+        int attempt = 0;
+
+        while (attempt++ < maxPollAttempts)
+        {
+            using var req = UnityWebRequest.Get($"{serverUrl}/job-status/{currentJobId}");
+            yield return req.SendWebRequest();
+
+            if (req.result == UnityWebRequest.Result.Success)
+            {
+                var status = JsonUtility.FromJson<JobStatusResponse>(req.downloadHandler.text);
+
+                UpdateProgress(status.progress);
+
+                // ✅ DONE 或 SUCCESS 都可以
+                if (status.status == "DONE" || status.status == "SUCCESS")
+                {
+                    UpdateStatus("Downloading model...");
+                    yield return DownloadAndLoadGLB(status.modelUrl);
+                    generateButton.interactable = true;
+                    yield break;
+                }
+
+                if (status.status == "FAILED")
+                {
+                    UpdateStatus("Generation failed: " + status.error);
+                    generateButton.interactable = true;
+                    yield break;
+                }
+            }
+
+            yield return new WaitForSeconds(pollInterval);
+        }
+
+        UpdateStatus("Task timeout");
+        generateButton.interactable = true;
+    }
+    #endregion
+
+    #region GLB
+    IEnumerator DownloadAndLoadGLB(string url)
+    {
+        string path = Path.Combine(
+            Application.persistentDataPath,
+            $"model_{currentJobId}.glb");
+
+        using var req = UnityWebRequest.Get(url);
+        req.downloadHandler = new DownloadHandlerFile(path);
+        yield return req.SendWebRequest();
+
+        if (req.result != UnityWebRequest.Result.Success)
+        {
+            UpdateStatus("Download failed: " + req.error);
+            yield break;
+        }
+
+        yield return LoadGLB(path);
+    }
+
+    IEnumerator LoadGLB(string filePath)
+    {
+        if (!File.Exists(filePath))
+        {
+            UpdateStatus("GLB file not found: " + filePath);
+            yield break;
+        }
+
+        if (currentModel) Destroy(currentModel);
+
+        currentModel = new GameObject("GLB_Model");
+        currentModel.transform.SetParent(parent, false);
+
+        var gltf = new GltfImport();
+
+        // ✅ 加载 GLB
+        yield return gltf.Load(filePath);
+
+        if (!gltf.LoadingDone)
+        {
+            UpdateStatus("GLB load failed (LoadingDone == false)");
+            yield break;
+        }
+
+        // ✅ 实例化主场景（适配 glTFast 版本）
+        var instantiateTask = gltf.InstantiateMainSceneAsync(currentModel.transform);
+        yield return instantiateTask;
+
+        if (!instantiateTask.Result)
+        {
+            UpdateStatus("GLB instantiate failed");
+            yield break;
+        }
+
+        FitModel(currentModel);
+        currentModel.AddComponent<AutoRotate>().rotationSpeed = 30f;
+
+        UpdateStatus("Model loaded successfully");
+    }
+
+    void FitModel(GameObject go)
+    {
+        var rs = go.GetComponentsInChildren<Renderer>();
+        if (rs.Length == 0) return;
+
+        Bounds b = rs[0].bounds;
+        foreach (var r in rs) b.Encapsulate(r.bounds);
+
+        float max = Mathf.Max(b.size.x, b.size.y, b.size.z);
+        go.transform.localScale = Vector3.one * (2f / max) * modelScale;
+    }
+    #endregion
+
+    #region UI
+    void UpdateStatus(string msg)
+    {
+        statusText.text = msg;
+        Debug.Log(msg);
+    }
+
+    void UpdateProgress(float p)
+    {
+        if (progressSlider)
+            progressSlider.value = p / 100f;
+    }
+    #endregion
+
+    void OnDestroy()
+    {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        dictationRecognizer?.Dispose();
+#endif
+    }
+
+    #region DTO
+    [System.Serializable]
+    public class PromptData { public string prompt; }
+
+    [System.Serializable]
+    public class SubmitResponse
+    {
+        public bool success;
+        public string jobId;
+        public string error;
+    }
+
+    [System.Serializable]
+    public class JobStatusResponse
+    {
+        public bool success;
+        public string status;
+        public float progress;
+        public string modelUrl;
+        public string error;
+    }
+    #endregion
+}

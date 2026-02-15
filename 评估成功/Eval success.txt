@@ -1,0 +1,231 @@
+import numpy as np
+from scipy.spatial import cKDTree
+import trimesh
+from PIL import Image, ImageDraw
+import torch
+import clip
+import sys
+import os
+import gc
+import csv
+import matplotlib.pyplot as plt
+from math import pi
+
+# -------------------------
+# 路径配置
+# -------------------------
+CONFIG = {
+    "gt_dir": "3d_eval_project/data/gt/glb_files",            # GT 模型 (GLB格式)
+    "gen_dir": "3d_eval_project/data/gen/hunyuan",          # 生成模型 (GLB或OBJ)
+    "output_dir": "3d_eval_project/results",        # 结果输出
+    "n_samples": 3000,                              # 1080Ti 建议 3000-5000
+    "weights": {                                    
+        "geometry": 0.4,   
+        "perceptual": 0.4, 
+        "topology": 0.2    
+    }
+}
+
+os.makedirs(CONFIG["output_dir"], exist_ok=True)
+
+# -------------------------
+# 核心指标计算
+# -------------------------
+
+def chamfer_distance(mesh1, mesh2, n_samples=3000):
+    """
+    几何得分：加入自动对齐与归一化
+    确保评估的是 '形状' 而不是 '空间位置'
+    """
+    try:
+        def get_aligned_pc(mesh, n):
+            # 采样
+            pc = mesh.sample(n)
+            # 1. 中心化：将几何中心移至 (0,0,0)
+            pc -= np.mean(pc, axis=0)
+            # 2. 尺度归一化：缩放到单位球内 (最大半径为1)
+            dist = np.max(np.sqrt(np.sum(pc**2, axis=1)))
+            if dist > 0:
+                pc /= dist
+            return pc
+
+        # 获取对齐后的点云
+        p1 = get_aligned_pc(mesh1, n_samples)
+        p2 = get_aligned_pc(mesh2, n_samples)
+        
+        # 使用 KDTree 计算最近邻距离
+        tree1 = cKDTree(p1)
+        tree2 = cKDTree(p2)
+        d12, _ = tree1.query(p2, k=1)
+        d21, _ = tree2.query(p1, k=1)
+        
+        # 计算双向 Chamfer Distance
+        # 此时 raw_dist 的取值范围通常在 0.05 (极像) 到 0.5 (完全不像) 之间
+        raw_dist = float(np.mean(d12) + np.mean(d21))
+        
+        # 映射到 0-100 分
+        # 这里的系数 2.0 可以根据你观察到的结果微调
+        # 如果 raw_dist 为 0.1，得分为 80；如果 > 0.5，得分为 0
+        score = max(0, 100 * (1 - raw_dist * 2.0)) 
+        
+        return score, raw_dist
+    except Exception as e:
+        print(f"  CD计算失败: {e}")
+        return 0, 1.0
+
+def get_topology_score_academic(mesh):
+    """
+    学术级指标：Mesh Isotropic Regularity (基于变异系数)
+    """
+    if isinstance(mesh, trimesh.Scene):
+        mesh = mesh.dump(concatenate=True)
+    
+    # 焊接顶点以模拟真实拓扑（严谨性步骤）
+    mesh.merge_vertices()
+    
+    # 计算边长统计量
+    tri_verts = mesh.vertices[mesh.faces]
+    e0 = np.linalg.norm(tri_verts[:, 1] - tri_verts[:, 0], axis=1)
+    e1 = np.linalg.norm(tri_verts[:, 2] - tri_verts[:, 1], axis=1)
+    e2 = np.linalg.norm(tri_verts[:, 0] - tri_verts[:, 2], axis=1)
+
+    # 计算变异系数 (学术标准指标)
+    edge_std = np.std([e0, e1, e2], axis=0) 
+    edge_mean = np.mean([e0, e1, e2], axis=0) + 1e-8
+    cv = np.mean(edge_std / edge_mean)
+
+    # 映射公式：依据学术论文常见分布调整
+    # 0.1 以下为优秀，0.4 以上为较差
+    quality_score = max(0, min(100, 100 * (1 - cv * 2)))
+    return round(float(quality_score), 2)
+    
+def render_pointcloud_views(mesh, image_size=224, point_radius=2):
+    # 将 GLB 场景转换为网格
+    if isinstance(mesh, trimesh.Scene):
+        mesh = mesh.dump(concatenate=True)
+    
+    verts = mesh.vertices.copy()
+    center = verts.mean(axis=0)
+    verts -= center
+    scale = np.max(np.linalg.norm(verts, axis=1))
+    if scale <= 0: scale = 1.0
+    verts /= scale
+    
+    imgs = []
+    # 正视、侧视、俯视
+    for proj in [verts[:, [0, 1]], verts[:, [2, 1]], verts[:, [0, 2]]]:
+        img = Image.new("RGB", (image_size, image_size), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        coords = ((proj + 1.0) * 0.5 * (image_size - 20)) + 10
+        for (x, y) in coords:
+            draw.ellipse([x-point_radius, y-point_radius, x+point_radius, y+point_radius], fill=(30, 30, 30))
+        imgs.append(img)
+    return imgs
+
+def get_perceptual_score(mesh1, mesh2, model, preprocess, device):
+    try:
+        imgs1 = render_pointcloud_views(mesh1)
+        imgs2 = render_pointcloud_views(mesh2)
+        
+        def combine(imgs):
+            out = Image.new("RGB", (224*3, 224), (255, 255, 255))
+            for i, im in enumerate(imgs): out.paste(im, (i*224, 0))
+            return out
+
+        img1 = preprocess(combine(imgs1)).unsqueeze(0).to(device)
+        img2 = preprocess(combine(imgs2)).unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            e1 = model.encode_image(img1).float()
+            e2 = model.encode_image(img2).float()
+            sim = float(torch.nn.functional.cosine_similarity(e1, e2))
+        
+        return max(0, sim * 100)
+    except Exception as e:
+        print(f"  CLIP计算失败: {e}")
+        return 0
+
+def save_radar_chart(scores, output_path, model_id):
+    labels = list(scores.keys())
+    values = list(scores.values())
+    num_vars = len(labels)
+    angles = [n / float(num_vars) * 2 * pi for n in range(num_vars)]
+    values += values[:1]
+    angles += angles[:1]
+
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw=dict(polar=True))
+    plt.xticks(angles[:-1], labels)
+    ax.plot(angles, values, color='teal', linewidth=2)
+    ax.fill(angles, values, color='teal', alpha=0.25)
+    ax.set_ylim(0, 100)
+    ax.set_title(f"ID: {model_id}")
+    plt.savefig(output_path)
+    plt.close()
+
+# -------------------------
+# 主程序
+# -------------------------
+def run_pipeline():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    
+    # 1080Ti 使用 FP32 加载 CLIP
+    model, preprocess = clip.load("ViT-B/32", device=device, jit=False)
+    model.float() 
+
+    results_data = []
+    # 查找生成目录下的所有模型文件
+    gen_files = [f for f in os.listdir(CONFIG["gen_dir"]) if f.lower().endswith(('.glb', '.obj'))]
+    
+    if not gen_files:
+        print(f"错误: 在 {CONFIG['gen_dir']} 中没找到任何模型文件！")
+        return
+
+    for gen_file in gen_files:
+        model_id = os.path.splitext(gen_file)[0]
+        # 尝试匹配 GT 目录下的 glb
+        gt_file = os.path.join(CONFIG["gt_dir"], f"{model_id}.glb")
+        
+        if not os.path.exists(gt_file):
+            print(f"跳过: 未找到对应的 GT 文件 {gt_file}")
+            continue
+            
+        print(f"\n>>> 正在评估: {model_id}")
+        
+        try:
+            # 加载时使用 process=True 自动修复一些基础拓扑错误
+            m_gen = trimesh.load(os.path.join(CONFIG["gen_dir"], gen_file), force='mesh', process=True)
+            m_gt = trimesh.load(gt_file, force='mesh', process=True)
+            
+            # 计算得分
+            s_geo, raw_cd = chamfer_distance(m_gt, m_gen, n_samples=CONFIG["n_samples"])
+            s_topo = get_topology_score_academic(m_gen)#topo 得分改版本要改这一行
+            s_perc = get_perceptual_score(m_gt, m_gen, model, preprocess, device)
+            
+            # 总分
+            total_score = (s_geo * CONFIG["weights"]["geometry"] + 
+                           s_perc * CONFIG["weights"]["perceptual"] + 
+                           s_topo * CONFIG["weights"]["topology"])
+            
+            scores = {"Geometry": s_geo, "Perceptual": s_perc, "Topology": s_topo}
+            
+            # 存图
+            save_radar_chart(scores, os.path.join(CONFIG["output_dir"], f"{model_id}_radar.png"), model_id)
+            
+            results_data.append([model_id, f"{total_score:.2f}", f"{s_geo:.2f}", f"{s_perc:.2f}", f"{s_topo:.2f}", f"{raw_cd:.6f}"])
+            print(f"    成功！总分: {total_score:.2f}")
+
+        except Exception as e:
+            print(f"    处理 {model_id} 时发生错误: {e}")
+
+    # 保存报表
+    csv_path = os.path.join(CONFIG["output_dir"], "summary_report.csv")
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["Model_ID", "Total_Score", "Geo_Score", "Perc_Score", "Topo_Score", "Raw_CD"])
+        writer.writerows(results_data)
+    
+    print(f"\n{'='*40}\n所有评估已完成！报告存放在: {CONFIG['output_dir']}")
+
+if __name__ == "__main__":
+    run_pipeline()

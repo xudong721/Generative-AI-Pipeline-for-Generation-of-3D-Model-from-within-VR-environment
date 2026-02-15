@@ -1,0 +1,82 @@
+Some Gen-AI Tools for 3D model generation (for Li):
+Tripo AI
+Meshy AI
+BeViAI 3D
+GET3D (NVIDIA)
+Hunyuan3D-2.0 (Tencent)
+Cube 3D (Roblox)
+MagicCraft
+
+
+Hyper3D v1.9 & Deemos & \textbf{69.49} & 77.24 & \textbf{69.87} & 53.04 & 0.1138 \\
+
+Hunyuan v3.1 & Tencent & 66.40 & \textbf{78.02} & 64.96 & 47.65 & \textbf{0.1049} \\
+
+Meshy 4 & Meshy AI & 66.30 & 72.80 & 66.12 & 50.87 & 0.1170 \\
+
+Tripo v3.0 & VAST & 64.35 & 64.22 & 66.80 & \textbf{59.08} & 0.1763 \\
+
+Trellis 3D v1 & Microsoft & 60.00 & 63.96 & 64.70 & 44.70 & 0.2285 \\
+
+
+Hyper3D v1.9 ，Hunyuan v3.1 ，Meshy 4 ，Tripo v3.0 ，Trellis 3D v1 
+
+Rodin
+
+Rodin (Deemos / Hyperhuman)
+Luma AI (Genie)
+InstantMesh / SF3D
+
+
+
+
+Based on current memory and budget constraints
+
+Use a lighter approach  —— CLIP
+
+（semantics，image–3D, text–3D）
+
+
+Academic and Authority Metrics   —— geometry quality
+
+**Chamfer Distance (CD)**        
+**Earth Mover's Distance (EMD)**    
+**F-score**                     
+**Normal Consistency**          
+**Mesh accuracy / completeness** 
+
+——topology quality
+**non-manifold ratio
+**Number of holes
+**Boundary length
+
+—— perceptual & semantics
+
+* LPIPS
+* SSIM
+* PSNR
+* DISTS
+* CLIP Score
+
+
+Implementation Method：
+-PyTorch3D
+-Trimesh............
+
+
+Test Model
+
+Low Complexity
+Medium Complexity
+High Complexity
+
+Tested the GenAI mentioned earlier.
+
+Tripo AI
+Meshy AI
+BeViAI 3D
+GET3D (NVIDIA)
+Hunyuan3D-2.0 (Tencent)
+Cube 3D (Roblox)
+MagicCraft
+

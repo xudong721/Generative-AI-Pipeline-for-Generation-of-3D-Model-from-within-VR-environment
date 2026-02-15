@@ -1,0 +1,58 @@
+conda create -n eval3d python=3.11
+conda activate eval3d
+
+🔹 永久解决方法（每次终端自动可用）
+
+初始化 conda 到你的 bash 配置：
+
+/home/hpc/iwfa/iwfa120h/miniconda3/bin/conda init bash
+
+
+重新加载 bash 配置：
+
+source ~/.bashrc
+
+
+之后每次打开终端，conda 都可以直接使用。
+
+
+DirectoryNotACondaEnvironmentError: The target directory exists, but it is not a conda environment.
+Use 'conda create' to convert the directory to a conda environment.
+  target directory: /home/hpc/iwfa/iwfa120h/miniconda3/envs/eval3d_py311
+
+
+
+tiny-cuda-nn-master/tiny-cuda-nn-master/bindings/torch
+
+退出代码128
+Why does my application give an http/https timeout?
+By default compute nodes cannot access the internet directly. This will result in connection timeouts.
+To circumvent this you have to configure a proxy server. Enter the following command either in an interactive job or add them to your job script:
+
+export http_proxy=http://proxy.nhr.fau.de:80export https_proxy=http://proxy.nhr.fau.de:80
+
+Some applications may expect the variables in capital letters instead:
+export HTTP_PROXY=http://proxy.nhr.fau.de:80export HTTPS_PROXY=http://proxy.nhr.fau.de:80
+
+11.15
+cd /eval3d-codebase-main/Eval3D/semantic_consistency/FeatUp
+
+source ~/.bashrc
+以前老是丢失，用的类似这个
+conda activate ~/eval3d-py311
+
+
+11.29 每次pip安装
+iwfa120h@tg046:~$ export http_proxy=http://proxy.nhr.fau.de:80export https_proxy=http://proxy.nhr.fau.de:80
+iwfa120h@tg046:~$ pip install torch clip-openai trimesh pillow pandas matplotlib seaborn tqdm scipy
+
+
+11.30 exit code: 1
+
+pip install "git+https://github.com/facebookresearch/pytorch3d.git" --no-build-isolation 
+
+12.8 clean 环境
+scipy scikit-image torch torchvision clip-anytorch
+
+26.1.19 clean内核
+/home/hpc/iwfa/iwfa120h/miniforge3/envs/eval3d-clean/bin/python -m pip install pandas matplotlib scipy trimesh tqdm clip-by-openai
